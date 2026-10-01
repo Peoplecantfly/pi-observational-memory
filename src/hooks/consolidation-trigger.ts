@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
 import { runDropper } from "../agents/dropper/agent.js";
 import { observationPoolMetrics } from "../agents/dropper/pool.js";
 import { ObserverStreamError, runObserver } from "../agents/observer/agent.js";
@@ -7,6 +8,7 @@ import { debugLog, withDebugLogContext } from "../debug-log.js";
 import { resolveObserverChunkMaxTokens } from "../config.js";
 import type { ConsolidationPhase, ResolveCtx, ResolveResult, Runtime } from "../runtime.js";
 import { serializeSourceAddressedBranchEntries } from "../serialize.js";
+import { reportWorkerUsage } from "../usage-reporter.js";
 import {
 	OM_OBSERVATIONS_DROPPED,
 	OM_OBSERVATIONS_RECORDED,
@@ -133,6 +135,27 @@ function workerHeadersFor(ctx: ConsolidationCtx, resolved: ResolvedModel): Resol
 			"x-opencode-session": sessionId,
 			"x-opencode-client": "pi",
 		},
+	};
+}
+
+/** Session id in the same form pi-tracker derives for its own records (session file name minus ".jsonl"). */
+function trackerSessionId(ctx: ConsolidationCtx): string | undefined {
+	const file = ctx.sessionManager.getSessionFile?.();
+	if (typeof file === "string" && file.length > 0) {
+		const base = file.split("/").pop() ?? file;
+		const id = base.replace(/\.jsonl$/, "");
+		if (id.length > 0) return id;
+	}
+	return ctx.sessionManager.getSessionId?.();
+}
+
+/** Per-worker closure forwarding each completed assistant message to pi-tracker (no-op when absent). */
+function usageReporter(ctx: ConsolidationCtx, worker: ResolvedModel) {
+	return (message: AssistantMessage): void => {
+		reportWorkerUsage(message, worker.model as Model<any>, {
+			cwd: ctx.cwd,
+			sessionId: trackerSessionId(ctx),
+		});
 	};
 }
 
@@ -451,6 +474,7 @@ async function runObserverStage(
 			maxOutputTokens: runtime.config.agentMaxTokens,
 			thinkingLevel: workerThinkingLevel(runtime, worker),
 			modelRegistry: ctx.modelRegistry,
+			onAssistantEnd: usageReporter(ctx, worker),
 		}));
 	} catch (error) {
 		if (error instanceof ObserverStreamError) {
@@ -524,6 +548,7 @@ async function runReflectorStage(
 		maxOutputTokens: runtime.config.agentMaxTokens,
 		thinkingLevel: workerThinkingLevel(runtime, worker),
 		modelRegistry: ctx.modelRegistry,
+		onAssistantEnd: usageReporter(ctx, worker),
 	}));
 	if (!reflections) return { outcome: "continue", sameRunReflections: [] };
 
@@ -600,6 +625,7 @@ async function runDropperStage(
 		maxOutputTokens: runtime.config.agentMaxTokens,
 		thinkingLevel: workerThinkingLevel(runtime, worker),
 		modelRegistry: ctx.modelRegistry,
+		onAssistantEnd: usageReporter(ctx, worker),
 	}));
 	const coversUpToId = earlierCoverageMarkerId(entries, observationCoverageId, sameRunReflectionCoverageId);
 	const data = coversUpToId && droppedIds ? buildObservationsDroppedData(droppedIds, coversUpToId) : undefined;

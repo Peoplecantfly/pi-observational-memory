@@ -1,5 +1,5 @@
 import { agentLoop, type AgentContext, type AgentLoopConfig, type AgentTool } from "@earendil-works/pi-agent-core";
-import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
 import { debugLog } from "../../debug-log.js";
@@ -62,6 +62,8 @@ interface RunDropperArgs {
 	thinkingLevel?: ModelThinkingLevel;
 	modelRegistry?: StreamableModelRegistry;
 	streamSimple?: WorkerStreamSimple;
+	/** Called with each completed assistant message (one per LLM call) — usage reporting. */
+	onAssistantEnd?: (message: AssistantMessage) => void;
 }
 
 const RELEVANCE_DROP_RANK: Record<Observation["relevance"], number> = {
@@ -290,6 +292,9 @@ export async function runDropper(args: RunDropperArgs): Promise<string[] | undef
 		const message = (event as { message?: { role?: string; stopReason?: string; errorMessage?: string } }).message;
 		if (message?.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted")) {
 			streamError = { stopReason: message.stopReason, errorMessage: message.errorMessage };
+		}
+		if (event.type === "message_end" && message?.role === "assistant") {
+			args.onAssistantEnd?.(message as AssistantMessage);
 		}
 	}
 	await stream.result();
